@@ -43,18 +43,20 @@ db.run(`
     git_root TEXT,
     tty TEXT,
     machine TEXT NOT NULL DEFAULT 'localhost',
+    space TEXT NOT NULL DEFAULT 'default',
     summary TEXT NOT NULL DEFAULT '',
     registered_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
   )
 `);
 
-// Migration: add machine column if missing (existing DBs)
+// Migration: add columns if missing (existing DBs)
 try {
   db.run("ALTER TABLE peers ADD COLUMN machine TEXT NOT NULL DEFAULT 'localhost'");
-} catch {
-  // Column already exists
-}
+} catch { /* Column already exists */ }
+try {
+  db.run("ALTER TABLE peers ADD COLUMN space TEXT NOT NULL DEFAULT 'default'");
+} catch { /* Column already exists */ }
 
 db.run(`
   CREATE TABLE IF NOT EXISTS messages (
@@ -90,8 +92,8 @@ setInterval(cleanStalePeers, 30_000);
 // --- Prepared statements ---
 
 const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, machine, summary, registered_at, last_seen)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO peers (id, pid, cwd, git_root, tty, machine, space, summary, registered_at, last_seen)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateLastSeen = db.prepare(`
@@ -116,6 +118,10 @@ const selectPeersByDirectory = db.prepare(`
 
 const selectPeersByGitRoot = db.prepare(`
   SELECT * FROM peers WHERE git_root = ?
+`);
+
+const selectPeersBySpace = db.prepare(`
+  SELECT * FROM peers WHERE space = ?
 `);
 
 const insertMessage = db.prepare(`
@@ -154,7 +160,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
     deletePeer.run(existing.id);
   }
 
-  insertPeer.run(id, body.pid, body.cwd, body.git_root, body.tty, body.machine ?? "localhost", body.summary, now, now);
+  insertPeer.run(id, body.pid, body.cwd, body.git_root, body.tty, body.machine ?? "localhost", body.space ?? "default", body.summary, now, now);
   return { id };
 }
 
@@ -183,6 +189,9 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
         // No git root, fall back to directory
         peers = selectPeersByDirectory.all(body.cwd) as Peer[];
       }
+      break;
+    case "space":
+      peers = selectPeersBySpace.all(body.space ?? "default") as Peer[];
       break;
     default:
       peers = selectAllPeers.all() as Peer[];

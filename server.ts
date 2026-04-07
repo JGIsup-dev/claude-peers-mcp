@@ -39,6 +39,7 @@ const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
 const BROKER_URL = process.env.CLAUDE_PEERS_BROKER_URL
   ?? `http://${process.env.CLAUDE_PEERS_BROKER_HOST ?? "127.0.0.1"}:${BROKER_PORT}`;
 const API_KEY = process.env.CLAUDE_PEERS_API_KEY ?? "";
+const SPACE = process.env.CLAUDE_PEERS_SPACE ?? "default";
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
@@ -190,15 +191,15 @@ const TOOLS = [
   {
     name: "list_peers",
     description:
-      "List other Claude Code instances running on this machine. Returns their ID, working directory, git repo, and summary.",
+      "List other Claude Code instances. Returns their ID, working directory, git repo, machine, space, and summary.",
     inputSchema: {
       type: "object" as const,
       properties: {
         scope: {
           type: "string" as const,
-          enum: ["machine", "directory", "repo"],
+          enum: ["machine", "directory", "repo", "space"],
           description:
-            'Scope of peer discovery. "machine" = all instances on this computer. "directory" = same working directory. "repo" = same git repository (including worktrees or subdirectories).',
+            'Scope of peer discovery. "machine" = all instances. "directory" = same working directory. "repo" = same git repository. "space" = same virtual space (set via CLAUDE_PEERS_SPACE env var).',
         },
       },
       required: ["scope"],
@@ -260,12 +261,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   switch (name) {
     case "list_peers": {
-      const scope = (args as { scope: string }).scope as "machine" | "directory" | "repo";
+      const scope = (args as { scope: string }).scope as "machine" | "directory" | "repo" | "space";
       try {
         const peers = await brokerFetch<Peer[]>("/list-peers", {
           scope,
           cwd: myCwd,
           git_root: myGitRoot,
+          space: SPACE,
           exclude_id: myId,
         });
 
@@ -284,6 +286,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           const parts = [
             `ID: ${p.id}`,
             `Machine: ${p.machine}`,
+            `Space: ${p.space}`,
             `PID: ${p.pid}`,
             `CWD: ${p.cwd}`,
           ];
@@ -533,10 +536,11 @@ async function main() {
     git_root: myGitRoot,
     tty,
     machine: hostname(),
+    space: SPACE,
     summary: initialSummary,
   });
   myId = reg.id;
-  log(`Registered as peer ${myId}`);
+  log(`Registered as peer ${myId} in space "${SPACE}"`);
 
   // If summary generation is still running, update it when done
   if (!initialSummary) {
