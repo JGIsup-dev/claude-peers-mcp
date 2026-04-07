@@ -155,6 +155,10 @@ let myId: PeerId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 
+// Local cache for messages received via polling but not yet retrieved by check_messages
+// This prevents message loss when channel notifications don't reach Claude Code
+const pendingMessages: Message[] = [];
+
 // --- MCP Server ---
 
 const mcp = new Server(
@@ -381,20 +385,31 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       try {
+        // Also fetch from broker (in case poller missed something)
         const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
-        if (result.messages.length === 0) {
+        // Merge broker messages into pending cache
+        for (const m of result.messages) {
+          if (!pendingMessages.some((p) => p.id === m.id)) {
+            pendingMessages.push(m);
+          }
+        }
+
+        if (pendingMessages.length === 0) {
           return {
             content: [{ type: "text" as const, text: "No new messages." }],
           };
         }
-        const lines = result.messages.map(
+
+        // Drain the cache
+        const messages = pendingMessages.splice(0);
+        const lines = messages.map(
           (m) => `From ${m.from_id} (${m.sent_at}):\n${m.text}`
         );
         return {
           content: [
             {
               type: "text" as const,
-              text: `${result.messages.length} new message(s):\n\n${lines.join("\n\n---\n\n")}`,
+              text: `${messages.length} new message(s):\n\n${lines.join("\n\n---\n\n")}`,
             },
           ],
         };
@@ -425,6 +440,9 @@ async function pollAndPushMessages() {
     const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
 
     for (const msg of result.messages) {
+      // Cache message locally so check_messages can return it
+      pendingMessages.push(msg);
+
       // Look up the sender's info for context
       let fromSummary = "";
       let fromCwd = "";
@@ -444,18 +462,22 @@ async function pollAndPushMessages() {
       }
 
       // Push as channel notification — this is what makes it immediate
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: msg.text,
-          meta: {
-            from_id: msg.from_id,
-            from_summary: fromSummary,
-            from_cwd: fromCwd,
-            sent_at: msg.sent_at,
+      try {
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: msg.text,
+            meta: {
+              from_id: msg.from_id,
+              from_summary: fromSummary,
+              from_cwd: fromCwd,
+              sent_at: msg.sent_at,
+            },
           },
-        },
-      });
+        });
+      } catch (e) {
+        log(`Channel notification failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
 
       log(`Pushed message from ${msg.from_id}: ${msg.text.slice(0, 80)}`);
     }
